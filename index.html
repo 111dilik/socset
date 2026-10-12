@@ -50,7 +50,7 @@ a{color:var(--green);text-decoration:none}
 
 /* ===== Auth screen ===== */
 #authScreen{
-  position:fixed;inset:0;z-index:1000;display:flex;align-items:center;justify-content:center;
+  position:fixed;inset:0;z-index:1000;display:none;align-items:center;justify-content:center;
   background:var(--bg);padding:20px;overflow:auto;
 }
 #authScreen::before{
@@ -666,20 +666,15 @@ a{color:var(--green);text-decoration:none}
 /* ============================================================
    НАСТРОЙКИ SUPABASE — ВСТАВЬ СВОИ ЗНАЧЕНИЯ
    ============================================================ */
-const SUPABASE_URL = 'https://uzwhxsbxtbufdurorfbx.supabase.co';
-const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InV6d2h4c2J4dGJ1ZmR1cm9yZmJ4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTE4MTQ4ODYsImV4cCI6MjEwNzM5MDg4Nn0.Or8LUWsZfaUGrCiBcCzEK3W4IJj6xuLpu51S7JIL06U';
+const SUPABASE_URL = 'ВСТАВЬ_СЮДА_URL';
+const SUPABASE_KEY = 'ВСТАВЬ_СЮДА_ANON_KEY';
 
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
-/* ============================================================
-   СОСТОЯНИЕ
-   ============================================================ */
 let session = null;
-let me = null; // profile row
+let me = null;
+let bootDone = false;
 
-/* ============================================================
-   УТИЛИТЫ
-   ============================================================ */
 const $ = (s, el=document) => el.querySelector(s);
 const $$ = (s, el=document) => [...el.querySelectorAll(s)];
 
@@ -695,7 +690,7 @@ function timeAgo(iso){
 }
 function toast(msg, isErr=false){
   const t = $('#toast'); t.textContent = msg; t.className = 'toast on' + (isErr?' err':'');
-  setTimeout(()=>t.className='toast' + (isErr?' err':''), 2500);
+  setTimeout(()=>t.className='toast' + (isErr?' err':''), 3000);
 }
 function showError(el, msg){ el.textContent = msg; el.classList.add('show'); }
 function hideError(el){ el.classList.remove('show'); }
@@ -738,13 +733,19 @@ $('#emailBtn').addEventListener('click', async () => {
         const {data:exist} = await sb.from('profiles').select('id').eq('username',username).maybeSingle();
         if(exist) throw new Error('Такой никнейм занят');
       }
-      const {data, error} = await sb.auth.signUp({email, password:pass});
+      const {data, error} = await sb.auth.signUp({
+        email, password: pass,
+        options: { data: { name: username || email.split('@')[0] } }
+      });
       if(error) throw error;
-      // Обновляем профиль, если задан username
+      if(!data.session){
+        toast('Проверь почту — включено подтверждение email', true);
+        return;
+      }
       if(data.user && username){
         await sb.from('profiles').update({username, display_name: username}).eq('id', data.user.id);
       }
-      toast('Проверь почту для подтверждения');
+      toast('Добро пожаловать!');
     } else {
       const {error} = await sb.auth.signInWithPassword({email, password:pass});
       if(error) throw error;
@@ -765,7 +766,6 @@ $('#googleBtn').addEventListener('click', async () => {
   if(error) showError($('#authError'), error.message);
 });
 
-// Phone auth
 $('#phoneBtn').addEventListener('click', () => {
   $('#phoneModal').classList.add('on');
   $('#phoneStep1').style.display='block';
@@ -786,7 +786,7 @@ $('#sendCodeBtn').addEventListener('click', async () => {
     $('#phoneStep2').style.display='block';
     toast('Код отправлен');
   }catch(e){
-    showError($('#phoneError'), e.message || 'Не удалось отправить код. Проверь, включён ли Twilio в Supabase.');
+    showError($('#phoneError'), e.message || 'Проверь Twilio в Supabase.');
   }finally{
     $('#sendCodeBtn').disabled = false;
   }
@@ -806,7 +806,6 @@ $('#verifyCodeBtn').addEventListener('click', async () => {
   }
 });
 
-// Skip auth — смотреть ленту без входа
 $('#skipAuth').addEventListener('click', e => {
   e.preventDefault();
   enterApp(false);
@@ -817,23 +816,29 @@ window.openAuth = () => {
 };
 
 /* ============================================================
-   AUTH STATE
+   AUTH STATE — единственный источник правды
    ============================================================ */
 sb.auth.onAuthStateChange(async (event, s) => {
   session = s;
-  if(s){
+
+  if (s) {
     // Загружаем профиль
     const {data} = await sb.from('profiles').select('*').eq('id', s.user.id).maybeSingle();
     me = data;
-    if(!me || !me.username){
-      // Показываем setup
+    enterApp(true);
+    // Профиль не настроен — показываем форму
+    if(!me || !me.username || me.username.startsWith('user_')){
       $('#profileSetupModal').classList.add('on');
-    } else {
-      enterApp(true);
     }
   } else {
     me = null;
-    enterApp(false);
+    // Если пользователь нажал «смотреть без входа» — оставляем ленту
+    if (window.__skipMode) {
+      enterApp(false);
+    } else {
+      $('#app').classList.remove('on');
+      $('#authScreen').style.display = 'flex';
+    }
   }
 });
 
@@ -858,11 +863,10 @@ $('#saveProfileBtn').addEventListener('click', async () => {
   if(!username || username.length<3) return toast('Никнейм минимум 3 символа', true);
 
   try{
-    // Проверка уникальности
     const {data:exist} = await sb.from('profiles').select('id').eq('username',username).neq('id',session.user.id).maybeSingle();
     if(exist) return toast('Такой никнейм занят', true);
 
-    let avatar_url = null;
+    let avatar_url = me?.avatar_url || null;
     if(setupAvatarFile){
       const ext = setupAvatarFile.name.split('.').pop();
       const path = `avatars/${session.user.id}.${ext}`;
@@ -870,6 +874,8 @@ $('#saveProfileBtn').addEventListener('click', async () => {
       if(!error){
         const {data:pub} = sb.storage.from('media').getPublicUrl(path);
         avatar_url = pub.publicUrl;
+      } else {
+        toast('Фото не загрузилось: ' + error.message, true);
       }
     }
 
@@ -879,7 +885,7 @@ $('#saveProfileBtn').addEventListener('click', async () => {
     if(error) throw error;
     me = data;
     $('#profileSetupModal').classList.remove('on');
-    enterApp(true);
+    renderSidebar();
     toast('Профиль сохранён');
   }catch(e){
     toast(e.message, true);
@@ -887,17 +893,19 @@ $('#saveProfileBtn').addEventListener('click', async () => {
 });
 
 /* ============================================================
-   NAV
+   ENTER APP
    ============================================================ */
 function enterApp(loggedIn){
   $('#authScreen').style.display = 'none';
   $('#app').classList.add('on');
   renderSidebar();
   loadFeed();
-  if(loggedIn){
+  if(loggedIn && me){
     $('#composerCard').style.display='block';
     $('#loginPromptCard').style.display='none';
-    $('#composerAvatar').outerHTML = avatarHTML(me).replace('avatar','avatar sm').replace('class="avatar sm"','class="avatar sm" id="composerAvatar"');
+    const ca = $('#composerAvatar');
+    if(me.avatar_url){ ca.innerHTML = `<img src="${esc(me.avatar_url)}" alt="">`; }
+    else { ca.textContent = initials(me.display_name || me.username); }
   } else {
     $('#composerCard').style.display='none';
     $('#loginPromptCard').style.display='block';
@@ -919,6 +927,9 @@ function renderSidebar(){
   }
 }
 
+/* ============================================================
+   NAV
+   ============================================================ */
 function navigate(page){
   $$('.nav').forEach(n => n.classList.toggle('active', n.dataset.page===page));
   $$('.page').forEach(p => p.classList.toggle('on', p.dataset.pagename===page));
@@ -931,33 +942,42 @@ function navigate(page){
   if(page==='settings') renderSettings();
   if(page==='games') $('#gameArea').innerHTML='';
 }
-
 $$('.nav').forEach(n => n.addEventListener('click', () => navigate(n.dataset.page)));
 
 /* ============================================================
    FEED
    ============================================================ */
 async function loadFeed(){
-  const {data, error} = await sb.from('posts')
-    .select('*, profiles:author_id(id, username, display_name, avatar_url), likes(user_id), comments(id)')
-    .order('created_at', {ascending:false}).limit(50);
-  if(error){ console.error(error); return; }
   const list = $('#feedList');
+  list.innerHTML = '<div class="empty">Загрузка...</div>';
+  const {data, error} = await sb.from('posts')
+    .select('*, author:profiles!posts_author_id_fkey(id, username, display_name, avatar_url), likes(user_id), comments(id)')
+    .order('created_at', {ascending:false}).limit(50);
+  if(error){
+    console.error(error);
+    list.innerHTML = '<div class="empty">Ошибка загрузки: ' + esc(error.message) + '</div>';
+    return;
+  }
   if(!data || !data.length){
     list.innerHTML = '<div class="empty">Пока никто ничего не постил</div>';
     return;
   }
   list.innerHTML = data.map(p => postHTML(p)).join('');
-  list.querySelectorAll('[data-like]').forEach(b => b.addEventListener('click', () => toggleLike(b.dataset.like)));
-  list.querySelectorAll('[data-media]').forEach(el => el.addEventListener('click', e => {
-    const src = e.currentTarget.dataset.src, isV = e.currentTarget.dataset.v === '1';
+  bindPostEvents(list);
+}
+
+function bindPostEvents(container){
+  container.querySelectorAll('[data-like]').forEach(b => b.addEventListener('click', () => toggleLike(b.dataset.like)));
+  container.querySelectorAll('[data-media]').forEach(el => el.addEventListener('click', e => {
+    const src = e.currentTarget.dataset.src;
+    const isV = e.currentTarget.dataset.v === '1';
     openLightbox(src, isV);
   }));
-  list.querySelectorAll('[data-openprofile]').forEach(el => el.addEventListener('click', () => openUserProfile(el.dataset.openprofile)));
+  container.querySelectorAll('[data-openprofile]').forEach(el => el.addEventListener('click', () => openUserProfile(el.dataset.openprofile)));
 }
 
 function postHTML(p){
-  const prof = p.profiles || {};
+  const prof = p.author || p.profiles || {};
   const liked = (p.likes||[]).some(l=>l.user_id===session?.user?.id);
   const media = Array.isArray(p.media) ? p.media : [];
   const n = Math.min(media.length, 9);
@@ -1016,7 +1036,7 @@ async function toggleLike(postId){
 let pendingMedia = [];
 let pendingMusic = null;
 
-$('#mediaInput').addEventListener('change', async e => {
+$('#mediaInput').addEventListener('change', e => {
   const files = [...e.target.files].slice(0, 9 - pendingMedia.length);
   for(const f of files){
     const type = f.type.startsWith('video') ? 'video' : 'image';
@@ -1059,24 +1079,23 @@ $('#publishBtn').addEventListener('click', async () => {
 
   $('#publishBtn').disabled = true;
   try{
-    // Загружаем медиа
     const uploaded = [];
     for(const m of pendingMedia){
-      const ext = m.file.name.split('.').pop();
+      const ext = (m.file.name.split('.').pop() || 'bin').toLowerCase();
       const path = `posts/${session.user.id}/${Date.now()}_${Math.random().toString(36).slice(2,8)}.${ext}`;
       const {error} = await sb.storage.from('media').upload(path, m.file);
-      if(error) throw error;
+      if(error) throw new Error('Медиа: ' + error.message);
       const {data:pub} = sb.storage.from('media').getPublicUrl(path);
       uploaded.push({type:m.type, url:pub.publicUrl});
     }
 
     const {error} = await sb.from('posts').insert({
       author_id: session.user.id,
-      content,
+      content: content || null,
       media: uploaded,
       music: pendingMusic
     });
-    if(error) throw error;
+    if(error) throw new Error('Пост: ' + error.message);
 
     $('#postText').value=''; pendingMedia=[]; pendingMusic=null;
     renderComposerMedia();
@@ -1084,6 +1103,7 @@ $('#publishBtn').addEventListener('click', async () => {
     toast('Опубликовано');
     loadFeed();
   }catch(e){
+    console.error(e);
     toast(e.message, true);
   }finally{
     $('#publishBtn').disabled = false;
@@ -1099,7 +1119,12 @@ async function renderProfile(){
     box.innerHTML = '<div class="empty">Войди, чтобы увидеть свой профиль<br><br><button class="btn btn-primary btn-sm" onclick="openAuth()">Войти</button></div>';
     return;
   }
-  const {data:posts} = await sb.from('posts').select('*, profiles:author_id(id,username,display_name,avatar_url), likes(user_id), comments(id)').eq('author_id', me.id).order('created_at',{ascending:false});
+  box.innerHTML = '<div class="empty">Загрузка...</div>';
+
+  const {data:posts} = await sb.from('posts')
+    .select('*, author:profiles!posts_author_id_fkey(id,username,display_name,avatar_url), likes(user_id), comments(id)')
+    .eq('author_id', me.id).order('created_at',{ascending:false});
+
   const {count:followers} = await sb.from('follows').select('*',{count:'exact',head:true}).eq('following_id', me.id);
   const {count:following} = await sb.from('follows').select('*',{count:'exact',head:true}).eq('follower_id', me.id);
 
@@ -1120,9 +1145,9 @@ async function renderProfile(){
         </div>
       </div>
     </div>
-    <div id="profilePosts">${(posts||[]).map(p=>postHTML(p)).join('')}</div>
+    <div id="profilePosts">${(posts||[]).length ? (posts||[]).map(p=>postHTML(p)).join('') : '<div class="empty">Пока постов нет</div>'}</div>
   `;
-  box.querySelectorAll('[data-like]').forEach(b => b.addEventListener('click', () => toggleLike(b.dataset.like)));
+  bindPostEvents(box);
 }
 
 async function openUserProfile(userId){
@@ -1131,7 +1156,9 @@ async function openUserProfile(userId){
 
   const {data:prof} = await sb.from('profiles').select('*').eq('id',userId).maybeSingle();
   if(!prof) return;
-  const {data:posts} = await sb.from('posts').select('*, profiles:author_id(id,username,display_name,avatar_url), likes(user_id), comments(id)').eq('author_id',userId).order('created_at',{ascending:false});
+  const {data:posts} = await sb.from('posts')
+    .select('*, author:profiles!posts_author_id_fkey(id,username,display_name,avatar_url), likes(user_id), comments(id)')
+    .eq('author_id',userId).order('created_at',{ascending:false});
   const {data:isFollowing} = await sb.from('follows').select('*').eq('follower_id',me.id).eq('following_id',userId).maybeSingle();
 
   const box = $('#profileContent');
@@ -1151,7 +1178,7 @@ async function openUserProfile(userId){
         </div>
       </div>
     </div>
-    <div>${(posts||[]).map(p=>postHTML(p)).join('')}</div>
+    <div>${(posts||[]).length ? (posts||[]).map(p=>postHTML(p)).join('') : '<div class="empty">Постов нет</div>'}</div>
   `;
 
   $('#followBtn').addEventListener('click', async () => {
@@ -1163,7 +1190,7 @@ async function openUserProfile(userId){
     openUserProfile(userId);
   });
   $('#msgBtn').addEventListener('click', () => startChatWith(userId));
-  box.querySelectorAll('[data-like]').forEach(b => b.addEventListener('click', () => toggleLike(b.dataset.like)));
+  bindPostEvents(box);
   navigate('profile');
 }
 
@@ -1175,7 +1202,6 @@ async function renderMessenger(){
     $('#chatListItems').innerHTML = '<div style="padding:30px;text-align:center;color:var(--text-3)">Войди, чтобы общаться</div>';
     return;
   }
-  // Все пользователи (кроме меня)
   const {data:users} = await sb.from('profiles').select('*').neq('id',session.user.id).limit(50);
   $('#chatListItems').innerHTML = (users||[]).map(u => `
     <div class="chat-item" data-user="${u.id}">
@@ -1191,7 +1217,6 @@ async function renderMessenger(){
 
 async function startChatWith(userId){
   if(!session) return openAuth();
-  // Проверяем, есть ли уже чат между нами
   const {data:mychats} = await sb.from('chat_members').select('chat_id').eq('user_id',session.user.id);
   const chatIds = (mychats||[]).map(c=>c.chat_id);
   let chatId = null;
@@ -1233,7 +1258,7 @@ async function openChat(chatId, otherUserId){
 }
 
 async function loadMessages(chatId){
-  const {data} = await sb.from('messages').select('*, profiles:sender_id(display_name,username,avatar_url)').eq('chat_id',chatId).order('created_at',{ascending:true});
+  const {data} = await sb.from('messages').select('*').eq('chat_id',chatId).order('created_at',{ascending:true});
   const box = $('#chatMessages');
   box.innerHTML = (data||[]).map(m => `
     <div class="msg ${m.sender_id===session.user.id?'me':'other'}">
@@ -1244,7 +1269,6 @@ async function loadMessages(chatId){
   box.scrollTop = box.scrollHeight;
 }
 
-// Search
 $('#userSearch').addEventListener('input', async e => {
   const q = e.target.value.trim().toLowerCase();
   if(!q){ renderMessenger(); return; }
@@ -1287,13 +1311,12 @@ async function renderUsers(){
 async function renderCommunities(){
   const box = $('#communitiesList');
   $('#createCommunityCard').style.display = session ? 'block' : 'none';
-  const {data} = await sb.from('communities').select('*, profiles:owner_id(display_name,username)').order('created_at',{ascending:false});
+  const {data} = await sb.from('communities').select('*').order('created_at',{ascending:false});
   if(!data?.length){ box.innerHTML = '<div class="empty">Сообществ пока нет</div>'; return; }
   box.innerHTML = data.map(c => `
     <div class="card">
       <div class="t-title">${esc(c.name)}</div>
       <div class="t-sub" style="margin:6px 0 10px">${esc(c.description||'')}</div>
-      <div style="font-size:12px;color:var(--text-3)">Создал @${esc(c.profiles?.username||'user')}</div>
     </div>
   `).join('');
 }
@@ -1309,7 +1332,7 @@ $('#createCommBtn').addEventListener('click', async () => {
 });
 
 /* ============================================================
-   PHOTOS & MUSIC (из постов пользователя)
+   PHOTOS & MUSIC
    ============================================================ */
 async function renderPhotos(){
   const box = $('#photosGrid');
@@ -1374,6 +1397,7 @@ async function renderSettings(){
   });
   $('#signOutBtn').addEventListener('click', async () => {
     await sb.auth.signOut();
+    window.__skipMode = false;
     location.reload();
   });
 }
@@ -1448,11 +1472,9 @@ function initTTT(box){
     state[i] = 'X'; draw();
     let r = check();
     if(r){ over = true; $('#tttStatus').textContent = r==='draw'?'Ничья':'Ты победил!'; return; }
-    // AI
     setTimeout(()=>{
       const free = state.map((v,i)=>v?null:i).filter(x=>x!==null);
       if(!free.length) return;
-      // Простая победа/блокировка
       let move = null;
       for(const i of free){ state[i]='O'; if(check()==='O'){ move=i; state[i]=''; break; } state[i]=''; }
       if(move===null) for(const i of free){ state[i]='X'; if(check()==='X'){ move=i; state[i]=''; break; } state[i]=''; }
@@ -1482,25 +1504,23 @@ function initGuess(box){
 }
 
 /* ============================================================
-   MODALS CLOSE
+   MODAL CLOSE
    ============================================================ */
 $$('[data-close]').forEach(b => b.addEventListener('click', () => $('#'+b.dataset.close).classList.remove('on')));
 $$('.modal-bg').forEach(m => m.addEventListener('click', e => { if(e.target===m) m.classList.remove('on'); }));
 
 /* ============================================================
-   ИНИЦИАЛИЗАЦИЯ — если сессии нет, показываем ленту
+   BOOT — единожды проверяем сессию
    ============================================================ */
 (async () => {
   const {data:{session:s}} = await sb.auth.getSession();
+  bootDone = true;
   if(!s){
-    // Сразу показываем ленту без входа
-    enterApp(false);
-    // Auth screen поверх
-    $('#authScreen').style.display='flex';
-    $('#app').classList.add('on');
-    // Скрываем app, пока пользователь не решит смотреть ленту
-    $('#authScreen').style.zIndex = 1000;
+    // Нет сессии — показываем экран входа
+    $('#authScreen').style.display = 'flex';
+    $('#app').classList.remove('on');
   }
+  // Если сессия есть — onAuthStateChange уже сработал и показал приложение
 })();
 </script>
 </body>
